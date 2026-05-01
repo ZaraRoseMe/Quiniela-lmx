@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Quiniela Liga MX — Liguilla 2026</title>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{--verde:#0F6E56;--rojo:#E24B4A;--gris:#5F5E5A}
@@ -68,6 +69,7 @@
     .vivo .t-dot{background:#1D9E75}
     .eliminado .t-dot{background:#E24B4A}
     select{padding:6px 10px;border-radius:7px;border:1px solid #d3d1c7;font-family:'DM Sans',sans-serif;font-size:12px;background:#fff;color:#2C2C2A;cursor:pointer}
+    .loading{text-align:center;padding:3rem;color:var(--gris);font-size:14px}
     @media(max-width:480px){
       .header h1{font-size:2.2rem}
       .equipos-grid{grid-template-columns:1fr}
@@ -81,12 +83,17 @@
       <h1>Quiniela Liga MX</h1>
       <p>Liguilla 2026</p>
     </div>
-    <div id="main-content"></div>
+    <div id="main-content"><div class="loading">Cargando...</div></div>
   </div>
 
   <script>
+    const SUPABASE_URL = "https://tdelfskddnqgdfcdapiv.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_uCNBVXyPWMXFkuU639MIEg_HzBIatJw";
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
     const ADMIN_PASS = "admin123";
     const PLAYER_PASS = "salsamacha";
+
     const EQUIPOS_LMX = [
       {id:"ame",n:"América",e:"🦅"},{id:"gua",n:"Guadalajara",e:"🐐"},
       {id:"cru",n:"Cruz Azul",e:"⚙️"},{id:"pum",n:"Pumas",e:"🐱"},
@@ -101,46 +108,48 @@
     ];
     const COLORES = ["#0F6E56","#185FA5","#993C1D","#993556"];
 
-    function getData(){try{return JSON.parse(localStorage.getItem("quiniela_lmx")||"null")}catch{return null}}
-    function saveData(d){localStorage.setItem("quiniela_lmx",JSON.stringify(d))}
+    const DEFAULT_STATE = {
+      jugadores:[
+        {id:0,nombre:"Zara",color:COLORES[0],equipos:[null,null]},
+        {id:1,nombre:"Luis",color:COLORES[1],equipos:[null,null]},
+        {id:2,nombre:"Sebas",color:COLORES[2],equipos:[null,null]},
+        {id:3,nombre:"Eliut",color:COLORES[3],equipos:[null,null]},
+      ],
+      equipos: Object.fromEntries(EQUIPOS_LMX.map(e=>[e.id,{...e,vivo:true}])),
+    };
 
-    function initData(){
-      return {
-        jugadores:[
-          {id:0,nombre:"Zara",color:COLORES[0],equipos:[null,null]},
-          {id:1,nombre:"Luis",color:COLORES[1],equipos:[null,null]},
-          {id:2,nombre:"Sebas",color:COLORES[2],equipos:[null,null]},
-          {id:3,nombre:"Eliut",color:COLORES[3],equipos:[null,null]},
-        ],
-        equipos: Object.fromEntries(EQUIPOS_LMX.map(e=>[e.id,{...e,vivo:true}])),
-        isAdmin:false, tab:0, viewingPlayer:null,
-      };
+    let state = null;
+    let session = { isAdmin: false, viewingPlayer: null, tab: 0 };
+    let selectedPlayerId = null;
+
+    async function loadState() {
+      const { data, error } = await sb.from("quiniela").select("data").eq("id","state").single();
+      if (error || !data || !data.data || !data.data.jugadores) {
+        state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+        await saveState();
+      } else {
+        state = data.data;
+      }
+      render();
     }
 
-    let state = getData() || initData();
-    // Asegurar nombres correctos
-    state.jugadores[0].nombre="Zara";
-    state.jugadores[1].nombre="Luis";
-    state.jugadores[2].nombre="Sebas";
-    state.jugadores[3].nombre="Eliut";
-    if(state.isAdmin===undefined) state.isAdmin=false;
-    saveData(state);
-
-    let selectedPlayerId = null;
+    async function saveState() {
+      await sb.from("quiniela").upsert({ id: "state", data: state });
+    }
 
     function ini(n){return n.split(" ").map(x=>x[0]).join("").slice(0,2).toUpperCase()}
     function vivos(j){return j.equipos.filter(e=>e&&state.equipos[e]&&state.equipos[e].vivo).length}
 
     function render(){
       const root=document.getElementById("main-content");
-      if(!state.isAdmin && state.viewingPlayer===null){root.innerHTML=renderLogin();return}
-      if(state.viewingPlayer!==null && !state.isAdmin){root.innerHTML=renderPlayerView();return}
-      const tabs=state.isAdmin?["Perfiles","Clasificación","Equipos","Jugadores"]:["Perfiles","Clasificación"];
-      root.innerHTML=`<div class="tab-bar">${tabs.map((t,i)=>`<button class="${state.tab===i?'active':''}" onclick="setTab(${i})">${t}</button>`).join("")}</div><div id="tc"></div>`;
+      if(!session.isAdmin && session.viewingPlayer===null){root.innerHTML=renderLogin();return}
+      if(session.viewingPlayer!==null && !session.isAdmin){root.innerHTML=renderPlayerView();return}
+      const tabs=session.isAdmin?["Perfiles","Clasificación","Equipos","Jugadores"]:["Perfiles","Clasificación"];
+      root.innerHTML=`<div class="tab-bar">${tabs.map((t,i)=>`<button class="${session.tab===i?'active':''}" onclick="setTab(${i})">${t}</button>`).join("")}</div><div id="tc"></div>`;
       const tc=document.getElementById("tc");
-      if(state.tab===0) tc.innerHTML=renderPerfiles();
-      else if(state.tab===1) tc.innerHTML=renderClasif();
-      else if(state.tab===2) tc.innerHTML=renderAdminEqs();
+      if(session.tab===0) tc.innerHTML=renderPerfiles();
+      else if(session.tab===1) tc.innerHTML=renderClasif();
+      else if(session.tab===2) tc.innerHTML=renderAdminEqs();
       else tc.innerHTML=renderAdminJugs();
     }
 
@@ -183,20 +192,19 @@
       if(selectedPlayerId===null) return;
       const val=document.getElementById("pass-player").value;
       const err=document.getElementById("err-player");
-      if(val===PLAYER_PASS){
-        state.viewingPlayer=selectedPlayerId;state.tab=0;saveData(state);render();
-      } else {err.style.display="block"}
+      if(val===PLAYER_PASS){session.viewingPlayer=selectedPlayerId;session.tab=0;render()}
+      else{err.style.display="block"}
     }
 
     function loginAdmin(){
       const val=document.getElementById("pass-admin").value;
       const err=document.getElementById("err-admin");
-      if(val===ADMIN_PASS){state.isAdmin=true;state.viewingPlayer=null;state.tab=0;saveData(state);render()}
+      if(val===ADMIN_PASS){session.isAdmin=true;session.viewingPlayer=null;session.tab=0;render()}
       else{err.style.display="block"}
     }
 
     function renderPlayerView(){
-      const j=state.jugadores[state.viewingPlayer];
+      const j=state.jugadores[session.viewingPlayer];
       return `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="avatar" style="background:${j.color}">${ini(j.nombre)}</div>
@@ -208,7 +216,7 @@
       <div style="margin-top:1rem"><div class="section-title">Clasificación</div>${renderClasif()}</div>`;
     }
 
-    function logout(){state.viewingPlayer=null;state.isAdmin=false;saveData(state);render()}
+    function logout(){session.viewingPlayer=null;session.isAdmin=false;render()}
 
     function renderJugCard(j,full){
       const v=vivos(j),total=j.equipos.filter(Boolean).length,pct=total>0?Math.round(v/total*100):0;
@@ -279,12 +287,36 @@
       </div>`).join("")}</div>`;
     }
 
-    function setTab(i){state.tab=i;saveData(state);render()}
-    function toggleEq(eid){state.equipos[eid].vivo=!state.equipos[eid].vivo;saveData(state);render()}
-    function cambiarNombre(id,v){state.jugadores[id].nombre=v;saveData(state)}
-    function asignarEq(jid,slot,eid){state.jugadores[jid].equipos[slot]=eid||null;saveData(state);render()}
+    function setTab(i){session.tab=i;render()}
 
-    render();
+    async function toggleEq(eid){
+      state.equipos[eid].vivo=!state.equipos[eid].vivo;
+      render();
+      await saveState();
+    }
+
+    function cambiarNombre(id,v){
+      state.jugadores[id].nombre=v;
+      saveState();
+    }
+
+    async function asignarEq(jid,slot,eid){
+      state.jugadores[jid].equipos[slot]=eid||null;
+      render();
+      await saveState();
+    }
+
+    // Actualizacion en tiempo real para participantes
+    sb.channel('quiniela-changes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'quiniela' }, payload => {
+        if (!session.isAdmin) {
+          state = payload.new.data;
+          render();
+        }
+      })
+      .subscribe();
+
+    loadState();
   </script>
 </body>
 </html>
