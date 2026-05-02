@@ -41,9 +41,9 @@
     .equipo-display{height:80px;display:flex;align-items:center;justify-content:center}
     .equipo-nombre{font-family:'Bebas Neue',sans-serif;font-size:2.4rem;letter-spacing:2px;color:#fff;text-shadow:0 0 20px rgba(0,245,255,0.5)}
     .equipo-nombre.rolling{animation:roll .08s ease-in-out infinite}
-    .equipo-nombre.revealed{animation:reveal .4s ease-out forwards}
+    .equipo-nombre.revealed{animation:reveal .5s ease-out forwards}
     @keyframes roll{0%{transform:translateY(-4px);opacity:.6}50%{transform:translateY(4px);opacity:1}100%{transform:translateY(-4px);opacity:.6}}
-    @keyframes reveal{0%{transform:scale(1.4);opacity:0}60%{transform:scale(0.95)}100%{transform:scale(1);opacity:1}}
+    @keyframes reveal{0%{transform:scale(1.5);opacity:0}50%{transform:scale(0.92)}80%{transform:scale(1.05)}100%{transform:scale(1);opacity:1}}
     .escudo-display{font-size:3rem;margin-bottom:.5rem;min-height:50px;display:flex;align-items:center;justify-content:center}
     .pos-display{font-size:.85rem;color:#EF9F27;letter-spacing:2px;font-family:'Bebas Neue',sans-serif;margin-bottom:.25rem;min-height:20px}
     .para-quien{font-size:13px;color:#aaa;letter-spacing:1px;margin-bottom:.5rem}
@@ -53,8 +53,12 @@
     .btn-sortear:disabled{background:#ccc;cursor:not-allowed}
     .btn-sortear.spinning{background:#C27A00;animation:pulse .6s ease-in-out infinite}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+    .esperando-box{text-align:center;padding:14px;background:#fff;border-radius:10px;border:1px solid #e0ddd6;font-size:13px;color:var(--gris)}
+    .esperando-box.animando{background:#1a1a2e;border-color:#f5c518;color:#f5c518;font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:2px;animation:pulse .8s ease-in-out infinite}
     .resultados{display:grid;gap:10px}
     .resultado-item{border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px;border:1.5px solid #9FE1CB;background:#f0fdf7}
+    .resultado-item.nuevo{animation:slideIn .5s ease-out}
+    @keyframes slideIn{0%{transform:translateX(-20px);opacity:0}100%{transform:translateX(0);opacity:1}}
     .resultado-avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:14px;color:#fff;flex-shrink:0}
     .resultado-info{flex:1}
     .resultado-nombre{font-weight:600;font-size:14px}
@@ -118,12 +122,10 @@
 <div class="confetti-container" id="confetti"></div>
 
 <script>
-// ── SUPABASE ───────────────────────────────────────────────
 const SUPABASE_URL='https://tdelfskddnqgdfcdapiv.supabase.co';
 const SUPABASE_KEY='sb_publishable_uCNBVXyPWMXFkuU639MIEg_HzBIatJw';
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 
-// ── CONFIG ────────────────────────────────────────────────
 const ADMIN_PASS='admin123';
 const PLAYER_PASS='salsamacha';
 const COLORES=['#0F6E56','#185FA5','#993C1D','#993556'];
@@ -141,7 +143,6 @@ const EQUIPOS_R2=[
   {id:'ame',n:'América',e:'🦅',pos:8},
 ];
 const TODOS_EQUIPOS=[...EQUIPOS_R1,...EQUIPOS_R2];
-
 const JUGADORES=[
   {id:0,nombre:'Zara',color:COLORES[0]},
   {id:1,nombre:'Luis',color:COLORES[1]},
@@ -149,7 +150,6 @@ const JUGADORES=[
   {id:3,nombre:'Eliut',color:COLORES[3]},
 ];
 
-// ── STATE ─────────────────────────────────────────────────
 const DEFAULT={
   jugadores:[
     {id:0,nombre:'Zara',color:COLORES[0],equipos:[null,null]},
@@ -165,8 +165,9 @@ let state=null;
 let session={isAdmin:false,viewingPlayer:null,tab:0};
 let selectedPlayerId=null;
 let spinning=false;
+let playerAnimating=false; // flag para animación local del jugador
+let prevAsigCount=0; // para detectar nuevo sorteo
 
-// ── SUPABASE LOAD/SAVE ─────────────────────────────────────
 async function loadState(){
   const{data,error}=await sb.from('quiniela').select('data').eq('id','state').single();
   if(error||!data||!data.data||!data.data.jugadores){
@@ -177,61 +178,126 @@ async function loadState(){
     if(!state.asignaciones)state.asignaciones=[];
     if(!state.equipos)state.equipos=Object.fromEntries(TODOS_EQUIPOS.map(e=>[e.id,{...e,vivo:true}]));
   }
-  render();
 }
 
 async function loadSorteo(){
   const{data,error}=await sb.from('sorteo').select('data').eq('id','state').single();
   if(!error&&data&&data.data&&data.data.asignaciones){
     state.asignaciones=data.data.asignaciones;
-    // sincronizar equipos de jugadores
     state.asignaciones.forEach(a=>{
       const slot=a.ronda===1?0:1;
       if(state.jugadores[a.jugId])state.jugadores[a.jugId].equipos[slot]=a.equipo.id;
     });
   }
+  prevAsigCount=state.asignaciones.length;
 }
 
-async function saveState(){
-  await sb.from('quiniela').upsert({id:'state',data:state});
-}
-
+async function saveState(){await sb.from('quiniela').upsert({id:'state',data:state});}
 async function saveSorteo(){
   await sb.from('sorteo').upsert({id:'state',data:{asignaciones:state.asignaciones}});
   await saveState();
 }
 
 // ── TIEMPO REAL ────────────────────────────────────────────
-// Suscripción a cambios en sorteo
 sb.channel('sorteo-rt')
   .on('postgres_changes',{event:'UPDATE',schema:'public',table:'sorteo'},payload=>{
-    if(!session.isAdmin&&!spinning){
+    if(!session.isAdmin&&!spinning&&!playerAnimating){
       const newAsig=payload.new.data.asignaciones||[];
-      if(JSON.stringify(newAsig)!==JSON.stringify(state.asignaciones)){
-        state.asignaciones=newAsig;
-        newAsig.forEach(a=>{
-          const slot=a.ronda===1?0:1;
-          if(state.jugadores[a.jugId])state.jugadores[a.jugId].equipos[slot]=a.equipo.id;
+      if(newAsig.length>prevAsigCount){
+        // hay un nuevo sorteo! mostrar animación local
+        const newest=newAsig[newAsig.length-1];
+        const rondaEquipos=newest.ronda===1?EQUIPOS_R1:EQUIPOS_R2;
+        runPlayerAnimation(newest,rondaEquipos,()=>{
+          state.asignaciones=newAsig;
+          newAsig.forEach(a=>{
+            const slot=a.ronda===1?0:1;
+            if(state.jugadores[a.jugId])state.jugadores[a.jugId].equipos[slot]=a.equipo.id;
+          });
+          prevAsigCount=newAsig.length;
+          const nr1=state.asignaciones.filter(a=>a.ronda===1).length;
+          const nr2=state.asignaciones.filter(a=>a.ronda===2).length;
+          if(nr1===4||nr2===4)lanzarConfetti();
+          render();
         });
-        render();
       }
     }
   })
   .subscribe();
 
-// Suscripción a cambios en quiniela (estados de equipos)
 sb.channel('quiniela-rt')
   .on('postgres_changes',{event:'UPDATE',schema:'public',table:'quiniela'},payload=>{
     if(!session.isAdmin){
-      const newState=payload.new.data;
-      if(newState&&newState.jugadores){
-        state.jugadores=newState.jugadores;
-        state.equipos=newState.equipos;
-        render();
-      }
+      const ns=payload.new.data;
+      if(ns&&ns.jugadores){state.jugadores=ns.jugadores;state.equipos=ns.equipos;render();}
     }
   })
   .subscribe();
+
+// ── ANIMACIÓN LOCAL PARA JUGADORES ────────────────────────
+function runPlayerAnimation(asignacion,rondaEquipos,onDone){
+  // Si el sorteo no es para la tab activa (sorteo), solo actualizar
+  if(session.tab!==0){onDone();return;}
+  playerAnimating=true;
+
+  // Re-render para mostrar estado de "sorteando"
+  renderSorteoAnimando(asignacion,rondaEquipos);
+
+  const nomEl=document.getElementById('eq-nom');
+  const escEl=document.getElementById('esc');
+  const posEl=document.getElementById('pos-disp');
+  const espEl=document.getElementById('esperando-box');
+  if(espEl)espEl.classList.add('animando');
+  if(espEl)espEl.textContent='🎰 ¡SORTEANDO!';
+
+  let tick=0;const totalTicks=25;
+  const interval=setInterval(()=>{
+    tick++;
+    const r=rondaEquipos[Math.floor(Math.random()*rondaEquipos.length)];
+    if(nomEl){nomEl.textContent=r.n;nomEl.className='equipo-nombre rolling';}
+    if(escEl)escEl.textContent=r.e;
+    if(posEl)posEl.textContent=`POSICIÓN #${r.pos}`;
+
+    if(tick>=totalTicks){
+      clearInterval(interval);
+      // revelar resultado real
+      const eq=asignacion.equipo;
+      if(nomEl){nomEl.textContent=eq.n;nomEl.className='equipo-nombre revealed';}
+      if(escEl)escEl.textContent=eq.e;
+      if(posEl)posEl.textContent=`POSICIÓN #${eq.pos} — ${eq.pos<=4?'TOP 4 🔥':'Semifinalista'}`;
+      setTimeout(()=>{
+        playerAnimating=false;
+        onDone();
+      },1600);
+    }
+  },80);
+}
+
+function renderSorteoAnimando(asignacion,rondaEquipos){
+  const tc=document.getElementById('tc');
+  if(!tc)return;
+  const jugActual=JUGADORES[asignacion.jugId];
+  const ronda=asignacion.ronda;
+  const equiposRonda=rondaEquipos;
+  const asigPrev=state.asignaciones;
+
+  tc.innerHTML=`
+    <div style="text-align:center;margin-bottom:1rem">
+      <h2 style="font-family:'Bebas Neue',sans-serif;font-size:2rem;color:var(--verde)">🎰 SORTEO</h2>
+    </div>
+    <div style="text-align:center;margin-bottom:1rem">
+      <span class="ronda-badge ${ronda===1?'ronda-1':'ronda-2'}">
+        ${ronda===1?'⚽ RONDA 1 — Posiciones #1 al #4':'🏆 RONDA 2 — Posiciones #5 al #8'}
+      </span>
+    </div>
+    <div class="maquina">
+      <div class="para-quien">Le toca a: <span>${jugActual.nombre}</span></div>
+      <div class="escudo-display" id="esc">🎰</div>
+      <div class="pos-display" id="pos-disp"></div>
+      <div class="equipo-display"><div class="equipo-nombre rolling" id="eq-nom">???</div></div>
+    </div>
+    <div id="esperando-box" class="esperando-box animando">🎰 ¡SORTEANDO!</div>
+  `;
+}
 
 // ── HELPERS ───────────────────────────────────────────────
 function ini(n){return n.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();}
@@ -243,16 +309,14 @@ function posColor(pos){
   return{bg:'#FCEBEB',c:'#A32D2D'};
 }
 
-// ── RENDER PRINCIPAL ──────────────────────────────────────
+// ── RENDER ────────────────────────────────────────────────
 function render(){
   const root=document.getElementById('main-content');
   if(!session.isAdmin&&session.viewingPlayer===null){root.innerHTML=renderLogin();return;}
-
   const isPlayer=session.viewingPlayer!==null&&!session.isAdmin;
   const tabs=session.isAdmin
     ?['🎰 Sorteo','👥 Perfiles','🏆 Tabla','⚽ Equipos','👤 Jugadores']
     :['🎰 Sorteo','👥 Perfiles','🏆 Tabla'];
-
   let header='';
   if(isPlayer){
     const j=state.jugadores[session.viewingPlayer];
@@ -264,7 +328,6 @@ function render(){
       <button onclick="logout()" style="font-size:12px;padding:6px 12px;border-radius:7px;border:1px solid #e0ddd6;background:#fff;cursor:pointer">Salir</button>
     </div>`;
   }
-
   root.innerHTML=`
     ${header}
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:.5rem">
@@ -277,7 +340,6 @@ function render(){
     </div>
     <div id="tc"></div>
   `;
-
   const tc=document.getElementById('tc');
   if(session.tab===0)tc.innerHTML=renderSorteo();
   else if(session.tab===1)tc.innerHTML=renderPerfiles();
@@ -315,7 +377,6 @@ function renderSorteo(){
   const r1Done=state.asignaciones.filter(a=>a.ronda===1).length;
   const r2Done=state.asignaciones.filter(a=>a.ronda===2).length;
   if(r1Done===4&&r2Done===4)return renderSorteoCompleto();
-
   const ronda=r1Done<4?1:2;
   const turnoIdx=ronda===1?r1Done:r2Done;
   const jugActual=JUGADORES[turnoIdx];
@@ -348,16 +409,13 @@ function renderSorteo(){
       <div class="pos-display" id="pos-disp"></div>
       <div class="equipo-display"><div class="equipo-nombre" id="eq-nom">???</div></div>
     </div>
-    ${session.isAdmin?`
-      <button class="btn-sortear" id="btn-s" onclick="iniciarSorteo()">
-        🎲 SORTEAR PARA ${jugActual.nombre.toUpperCase()}
-      </button>
-    `:`<div style="text-align:center;padding:12px;background:#fff;border-radius:10px;border:1px solid #e0ddd6;font-size:13px;color:var(--gris)">
-      <span class="live-dot"></span>Esperando el sorteo del admin en tiempo real...
-    </div>`}
-    ${state.asignaciones.length>0?`<div style="margin-top:1.5rem">
-      <div class="section-title">Ya sorteados</div>${listaAsig()}
-    </div>`:''}
+    ${session.isAdmin
+      ?`<button class="btn-sortear" id="btn-s" onclick="iniciarSorteo()">🎲 SORTEAR PARA ${jugActual.nombre.toUpperCase()}</button>`
+      :`<div id="esperando-box" class="esperando-box">
+          <span class="live-dot"></span>Esperando el sorteo del admin en tiempo real...
+        </div>`
+    }
+    ${state.asignaciones.length>0?`<div style="margin-top:1.5rem"><div class="section-title">Ya sorteados</div>${listaAsig()}</div>`:''}
   `;
 }
 
@@ -382,8 +440,7 @@ function listaAsig(){
 }
 
 function itemAsig(a){
-  const j=JUGADORES[a.jugId];
-  const pc=posColor(a.equipo.pos);
+  const j=JUGADORES[a.jugId];const pc=posColor(a.equipo.pos);
   return `<div class="resultado-item">
     <div class="resultado-avatar" style="background:${j.color}">${ini(j.nombre)}</div>
     <div class="resultado-info">
@@ -408,13 +465,11 @@ async function iniciarSorteo(){
   const asigIds=state.asignaciones.filter(a=>a.ronda===ronda).map(a=>a.equipo.id);
   const disponibles=equiposRonda.filter(e=>!asigIds.includes(e.id));
   const ganador=disponibles[Math.floor(Math.random()*disponibles.length)];
-
   const btn=document.getElementById('btn-s');
   const nomEl=document.getElementById('eq-nom');
   const escEl=document.getElementById('esc');
   const posEl=document.getElementById('pos-disp');
   if(btn){btn.disabled=true;btn.classList.add('spinning');btn.textContent='🎰 SORTEANDO...';}
-
   let tick=0;const totalTicks=30;
   const interval=setInterval(()=>{
     tick++;
@@ -431,6 +486,7 @@ async function iniciarSorteo(){
         state.asignaciones.push({jugId:turnoIdx,equipo:ganador,ronda});
         const slot=ronda===1?0:1;
         state.jugadores[turnoIdx].equipos[slot]=ganador.id;
+        prevAsigCount=state.asignaciones.length;
         await saveSorteo();
         spinning=false;
         const nr1=state.asignaciones.filter(a=>a.ronda===1).length;
@@ -445,9 +501,8 @@ async function iniciarSorteo(){
 async function reiniciarSorteo(){
   if(!session.isAdmin)return;
   if(!confirm('¿Reiniciar el sorteo? Se borrarán las asignaciones.'))return;
-  state.asignaciones=[];
-  state.jugadores.forEach(j=>j.equipos=[null,null]);
-  await saveSorteo();render();
+  state.asignaciones=[];state.jugadores.forEach(j=>j.equipos=[null,null]);
+  prevAsigCount=0;await saveSorteo();render();
 }
 
 function lanzarConfetti(){
@@ -495,7 +550,6 @@ function renderJugCard(j){
   </div>`;
 }
 
-// ── CLASIFICACIÓN ─────────────────────────────────────────
 function renderClasif(){
   const sorted=[...state.jugadores].sort((a,b)=>vivos(b)-vivos(a));
   const ranks=['oro','plata','bronce',''];
@@ -510,10 +564,8 @@ function renderClasif(){
   </div>`).join('')}</div>`;
 }
 
-// ── ADMIN EQUIPOS ─────────────────────────────────────────
 function renderAdminEqs(){
-  return `<div>
-    <div class="section-title">Toca un equipo para marcar como eliminado</div>
+  return `<div><div class="section-title">Toca un equipo para marcar como eliminado</div>
     <div class="all-teams">${TODOS_EQUIPOS.map(eq=>{
       const e=state.equipos[eq.id];if(!e)return'';
       const pc=posColor(eq.pos);
@@ -527,10 +579,8 @@ function renderAdminEqs(){
   </div>`;
 }
 
-// ── ADMIN JUGADORES ───────────────────────────────────────
 function renderAdminJugs(){
-  return `<div>
-    <div class="section-title">Asignar equipos manualmente</div>
+  return `<div><div class="section-title">Asignar equipos manualmente</div>
     ${state.jugadores.map(j=>`<div class="card" style="margin-bottom:.75rem">
       <div style="display:flex;align-items:center;gap:10px;border-bottom:.5px solid #f0ede8;margin-bottom:10px;padding-bottom:10px">
         <div class="mini-avatar" style="background:${j.color}">${ini(j.nombre)}</div>
@@ -552,19 +602,10 @@ function renderAdminJugs(){
   </div>`;
 }
 
-// ── ACCIONES ──────────────────────────────────────────────
 function setTab(i){session.tab=i;render();}
-
-async function toggleEq(eid){
-  state.equipos[eid].vivo=!state.equipos[eid].vivo;
-  render();await saveState();
-}
+async function toggleEq(eid){state.equipos[eid].vivo=!state.equipos[eid].vivo;render();await saveState();}
 function cambiarNombre(id,v){state.jugadores[id].nombre=v;saveState();}
-async function asignarEq(jid,slot,eid){
-  state.jugadores[jid].equipos[slot]=eid||null;
-  render();await saveState();
-}
-
+async function asignarEq(jid,slot,eid){state.jugadores[jid].equipos[slot]=eid||null;render();await saveState();}
 function selectPlayer(id){
   selectedPlayerId=id;
   document.querySelectorAll('.player-btn').forEach(b=>b.classList.remove('selected'));
@@ -587,12 +628,7 @@ function loginAdmin(){
 }
 function logout(){session.viewingPlayer=null;session.isAdmin=false;render();}
 
-// ── INIT ──────────────────────────────────────────────────
-async function init(){
-  await loadState();
-  await loadSorteo();
-  render();
-}
+async function init(){await loadState();await loadSorteo();render();}
 init();
 </script>
 </body>
